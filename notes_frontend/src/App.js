@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './App.css';
+import { supabase } from './supabaseClient';
 
 /** Color palette from requirements */
 const COLORS = {
@@ -10,32 +11,92 @@ const COLORS = {
   text: "#222",
 };
 
-function useAutosaveNotes(notes, setNotes) {
-  // On mount, load notes from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('kavia-notes');
-    if (saved) {
-      try {
-        setNotes(JSON.parse(saved));
-      } catch {}
-    }
-    // eslint-disable-next-line
-  }, []);
-
-  // Autosave notes to localStorage on change
-  useEffect(() => {
-    localStorage.setItem('kavia-notes', JSON.stringify(notes));
-  }, [notes]);
+/**
+ * Load notes from Supabase "notes" table.
+ */
+async function loadNotes(setNotes, setLoading) {
+  setLoading(true);
+  const { data, error } = await supabase
+    .from('notes')
+    .select('*')
+    .order('updated_at', { ascending: false });
+  if (error) {
+    // Possible logging or alert: error.message
+    setNotes([]);
+  } else {
+    setNotes(data || []);
+  }
+  setLoading(false);
 }
 
-// PUBLIC_INTERFACE
+/**
+ * Create a new note in Supabase and return the inserted note.
+ */
+async function createNote() {
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('notes')
+    .insert([{ title: '', content: '', created_at: now, updated_at: now }])
+    .select();
+  if (error) {
+    alert('Failed to create note: ' + error.message);
+    return null;
+  }
+  return data && data[0];
+}
+
+/**
+ * Update a note in Supabase by id.
+ */
+async function updateNote(note) {
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('notes')
+    .update({
+      title: note.title,
+      content: note.content,
+      updated_at: now,
+    })
+    .eq('id', note.id)
+    .select();
+  if (error) {
+    alert('Failed to update note: ' + error.message);
+    return null;
+  }
+  return data && data[0];
+}
+
+/**
+ * Delete a note in Supabase by id.
+ */
+async function deleteNote(id) {
+  const { error } = await supabase
+    .from('notes')
+    .delete()
+    .eq('id', id);
+  if (error) {
+    alert('Failed to delete note: ' + error.message);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Main Notes App – CRUD with Supabase persistence.
+ * PUBLIC_INTERFACE
+ */
 function App() {
-  // Notes state: [{id, title, content, updated}]
+  // Notes state: [{id, title, content, created_at, updated_at}]
   const [notes, setNotes] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [editingNote, setEditingNote] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  useAutosaveNotes(notes, setNotes);
+  // Get notes from Supabase on mount
+  useEffect(() => {
+    loadNotes(setNotes, setLoading);
+  }, []);
 
   // Handle selecting (viewing) a note
   const handleSelect = (id) => {
@@ -44,17 +105,16 @@ function App() {
     setEditingNote(note ? { ...note } : null);
   };
 
-  // Handle creating a new note
-  const handleCreate = () => {
-    const newNote = {
-      id: Date.now().toString(),
-      title: '',
-      content: '',
-      updated: new Date().toISOString()
-    };
-    setNotes([newNote, ...notes]);
-    setSelectedId(newNote.id);
-    setEditingNote({ ...newNote });
+  // Handle creating a new note in Supabase
+  const handleCreate = async () => {
+    setSaving(true);
+    const note = await createNote();
+    setSaving(false);
+    if (note) {
+      setNotes((prev) => [note, ...prev]);
+      setSelectedId(note.id);
+      setEditingNote({ ...note });
+    }
   };
 
   // Handle field changes for editing
@@ -62,27 +122,38 @@ function App() {
     setEditingNote({
       ...editingNote,
       [e.target.name]: e.target.value,
-      updated: new Date().toISOString()
+      updated_at: new Date().toISOString()
     });
   };
 
-  // Handle saving the note
-  const handleSave = () => {
+  // Handle saving the note to Supabase
+  const handleSave = async () => {
     if (!editingNote) return;
+    setSaving(true);
     const trimmed = {
       ...editingNote,
       title: editingNote.title.trim(),
       content: editingNote.content.trim(),
     };
-    setNotes(notes => notes.map(n => n.id === editingNote.id ? trimmed : n));
-    setEditingNote(trimmed);
+    const updated = await updateNote(trimmed);
+    setSaving(false);
+    if (updated) {
+      setNotes(notes => notes.map(n => n.id === trimmed.id ? updated : n));
+      setEditingNote(updated);
+    }
   };
 
-  // Handle deleting the selected note
-  const handleDelete = () => {
-    setNotes(notes => notes.filter(n => n.id !== selectedId));
-    setEditingNote(null);
-    setSelectedId(null);
+  // Handle deleting the selected note from Supabase
+  const handleDelete = async () => {
+    if (!selectedId) return;
+    setSaving(true);
+    const ok = await deleteNote(selectedId);
+    setSaving(false);
+    if (ok) {
+      setNotes(notes => notes.filter(n => n.id !== selectedId));
+      setEditingNote(null);
+      setSelectedId(null);
+    }
   };
 
   // For responsive main split
